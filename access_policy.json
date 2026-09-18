@@ -1,0 +1,35 @@
+{
+  "policy_version": "2026-09-18",
+  "note": "This table is the source of truth for access rules. Ingestion reads a document's folder (department) and looks up allowed roles here, instead of the document itself declaring who can read it.",
+  "department_rules": {
+    "hr_general": {
+      "folders": ["hr/employee_handbook.md", "hr/benefits_guide.md"],
+      "allowed_roles": ["hr_staff", "engineer", "executive"]
+    },
+    "hr_restricted": {
+      "folders": ["hr/compensation_bands.md"],
+      "allowed_roles": ["hr_staff", "executive"]
+    },
+    "engineering": {
+      "folders": [
+        "engineering/system_architecture.md",
+        "engineering/api_design_guidelines.md",
+        "engineering/incident_postmortem.md",
+        "engineering/on_call_runbook.md"
+      ],
+      "allowed_roles": ["engineer", "executive"]
+    },
+    "finance": {
+      "folders": [
+        "finance/annual_budget_summary.md",
+        "finance/board_deck_excerpt.md",
+        "finance/vendor_contract_summary.md"
+      ],
+      "allowed_roles": ["executive"]
+    }
+  },
+  "default_rule": {
+    "description": "Applied to any document that cannot be matched to a folder or classified with confidence",
+    "allowed_roles": ["executive"]
+  }
+}

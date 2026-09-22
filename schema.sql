@@ -24,7 +24,7 @@ CREATE TABLE users (
 -- Create documents table
 CREATE TABLE documents (
   id SERIAL PRIMARY KEY,
-  filename VARCHAR(255) NOT NULL,
+  filename VARCHAR(255) NOT NULL UNIQUE,
   department VARCHAR(100) NOT NULL
 );
 

@@ -3,10 +3,13 @@ from unittest.mock import MagicMock, call
 from ingestion.db import (
     delete_document_if_exists,
     get_or_create_user,
+    get_password_hash,
     get_role_id_map,
+    get_user_by_email,
     insert_chunks,
     insert_document,
     insert_document_roles,
+    set_password_hash,
 )
 
 
@@ -117,6 +120,52 @@ def test_get_or_create_user_inserts_when_not_found():
     )
     assert user_id == 11
     assert created is True
+
+
+def test_get_password_hash_returns_hash_when_present():
+    cur = MagicMock()
+    cur.fetchone.return_value = ("$2b$12$hashedvalue",)
+
+    result = get_password_hash(cur, user_id=1)
+
+    cur.execute.assert_called_once_with("SELECT password_hash FROM users WHERE id = %s", (1,))
+    assert result == "$2b$12$hashedvalue"
+
+
+def test_get_password_hash_returns_none_when_user_missing():
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+
+    assert get_password_hash(cur, user_id=999) is None
+
+
+def test_set_password_hash_updates_the_row():
+    cur = MagicMock()
+
+    set_password_hash(cur, user_id=1, password_hash="$2b$12$newhash")
+
+    cur.execute.assert_called_once_with(
+        "UPDATE users SET password_hash = %s WHERE id = %s", ("$2b$12$newhash", 1)
+    )
+
+
+def test_get_user_by_email_returns_id_name_role_and_hash():
+    cur = MagicMock()
+    cur.fetchone.return_value = (2, "Test Engineer", "engineer", "$2b$12$hash")
+
+    result = get_user_by_email(cur, "eng@example.com")
+
+    assert result == (2, "Test Engineer", "engineer", "$2b$12$hash")
+    executed_sql, params = cur.execute.call_args[0]
+    assert "JOIN roles" in executed_sql
+    assert params == ("eng@example.com",)
+
+
+def test_get_user_by_email_returns_none_when_not_found():
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+
+    assert get_user_by_email(cur, "nobody@example.com") is None
 
 
 def test_insert_chunks_inserts_one_row_per_chunk_with_matching_embedding():

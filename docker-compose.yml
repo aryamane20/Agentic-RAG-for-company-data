@@ -10,11 +10,37 @@ services:
       - "5435:5432"
     volumes:
       - rag_postgres_data:/var/lib/postgresql/data
+      # Auto-applied by the official Postgres entrypoint on first boot of
+      # a FRESH volume only -- an existing volume from before this file
+      # existed won't retroactively get it; that one was already applied
+      # manually. This is what makes a truly clean `docker compose up`
+      # (new machine, no volume yet) fully self-contained.
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_db"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  api:
+    build: .
+    container_name: rag_api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: rag_db
+      DB_USER: rag_user
+      DB_PASSWORD: rag_password
+    env_file:
+      # GROQ_API_KEY, JWT_SECRET, FRONTEND_ORIGIN, LANGFUSE_* -- read from
+      # the host's .env at container start, never baked into the image
+      # (.env is in .dockerignore).
+      - .env
 
 volumes:
   rag_postgres_data:

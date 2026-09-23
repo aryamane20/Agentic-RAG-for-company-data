@@ -2,12 +2,14 @@
 each wrapped in one transaction. Delete-and-replace on filename gives
 rerun safety (document_roles/chunks cascade-delete automatically)."""
 
+import os
+
 DB_CONFIG = {
-    "host": "localhost",
-    "port": 5435,
-    "dbname": "rag_db",
-    "user": "rag_user",
-    "password": "rag_password",
+    "host": os.environ.get("DB_HOST", "localhost"),
+    "port": int(os.environ.get("DB_PORT", "5435")),
+    "dbname": os.environ.get("DB_NAME", "rag_db"),
+    "user": os.environ.get("DB_USER", "rag_user"),
+    "password": os.environ.get("DB_PASSWORD", "rag_password"),
 }
 
 
@@ -16,6 +18,24 @@ def get_connection(config=None):
     from pgvector.psycopg2 import register_vector
 
     conn = psycopg2.connect(**(config or DB_CONFIG))
+    register_vector(conn)
+    return conn
+
+
+def get_connection_pool(minconn=1, maxconn=10, config=None):
+    """A small pool for the API server -- creating a fresh psycopg2
+    connection per HTTP request would be wasteful under real traffic."""
+    from psycopg2 import pool as pg_pool
+
+    return pg_pool.SimpleConnectionPool(minconn, maxconn, **(config or DB_CONFIG))
+
+
+def get_pooled_connection(conn_pool):
+    """pgvector's register_vector registers types per-connection, so it
+    has to be (re-)applied to whatever connection the pool hands back."""
+    from pgvector.psycopg2 import register_vector
+
+    conn = conn_pool.getconn()
     register_vector(conn)
     return conn
 
@@ -68,6 +88,32 @@ def get_or_create_user(cur, name, email, role_id):
         (name, email, role_id),
     )
     return cur.fetchone()[0], True
+
+
+def get_password_hash(cur, user_id):
+    cur.execute("SELECT password_hash FROM users WHERE id = %s", (user_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def set_password_hash(cur, user_id, password_hash):
+    cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (password_hash, user_id))
+
+
+def get_user_by_email(cur, email):
+    """Return (user_id, name, role_name, password_hash) for login, or
+    None if no user has that email. Joins roles so the caller gets the
+    role fresh from the DB, never from client input."""
+    cur.execute(
+        """
+        SELECT u.id, u.name, r.name, u.password_hash
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+        WHERE u.email = %s
+        """,
+        (email,),
+    )
+    return cur.fetchone()
 
 
 def insert_chunks(cur, document_id, chunk_texts, embeddings):

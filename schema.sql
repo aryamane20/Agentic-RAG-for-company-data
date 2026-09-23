@@ -18,7 +18,8 @@ CREATE TABLE users (
   id SERIAL PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
   email VARCHAR(255) UNIQUE NOT NULL,
-  role_id INTEGER NOT NULL REFERENCES roles(id)
+  role_id INTEGER NOT NULL REFERENCES roles(id),
+  password_hash TEXT
 );
 
 -- Create documents table

@@ -16,10 +16,11 @@ from ask import ask_once
 from backend import auth, retry
 from backend.errors import RequestIDMiddleware, register_error_handlers
 from backend.ratelimit import LOGIN_RATE_LIMIT, RATE_LIMIT, limiter
-from backend.schemas import ChatRequest, ChatResponse, LoginRequest, LoginResponse
+from backend.schemas import ChatRequest, ChatResponse, LoginRequest, LoginResponse, MeResponse
 from backend.store import ConversationStore, IdempotencyStore
 from ingestion import db, embeddings
 from qa import llm as llm_module
+from qa.tracing import build_langfuse_client
 
 load_dotenv()
 
@@ -31,7 +32,14 @@ async def lifespan(app: FastAPI):
     app.state.db_pool = db.get_connection_pool()
     app.state.conversations = ConversationStore()
     app.state.idempotency = IdempotencyStore()
+    # Built once at startup, not per-request -- the client batches and
+    # flushes traces on a background thread, so per-request construction
+    # would both be wasteful and drop that batching. None if LANGFUSE_*
+    # isn't set, which every call site below treats as "tracing is off."
+    app.state.langfuse = build_langfuse_client()
     yield
+    if app.state.langfuse is not None:
+        app.state.langfuse.flush()
     app.state.db_pool.closeall()
 
 
@@ -114,6 +122,39 @@ def login(payload: LoginRequest, request: Request):
     return JSONResponse(content=LoginResponse(access_token=token).model_dump())
 
 
+def _call_ask_once(request, cur, state, message, user_id, role, conversation_id):
+    """retry.call_with_retry(ask_once, ...), optionally wrapped in a
+    Langfuse trace -- one trace per /chat request, tagged with the user's
+    role and grouped by conversation_id so a multi-turn conversation shows
+    as one session in the Langfuse UI. No-op passthrough when tracing is
+    off (app.state.langfuse is None)."""
+    langfuse_client = request.app.state.langfuse
+    if langfuse_client is None:
+        return retry.call_with_retry(
+            ask_once, cur, request.app.state.embed_model, request.app.state.llm, state, message, user_id,
+        )
+
+    from langfuse.langchain import CallbackHandler
+
+    with langfuse_client.start_as_current_span(
+        name="chat", metadata={"conversation_id": conversation_id},
+    ):
+        langfuse_client.update_current_trace(
+            user_id=str(user_id), session_id=conversation_id, tags=[role],
+        )
+        handler = CallbackHandler()
+        return retry.call_with_retry(
+            ask_once,
+            cur,
+            request.app.state.embed_model,
+            request.app.state.llm,
+            state,
+            message,
+            user_id,
+            config={"callbacks": [handler]},
+        )
+
+
 @app.post("/chat", response_model=ChatResponse)
 @limiter.limit(RATE_LIMIT)
 def chat(payload: ChatRequest, request: Request):
@@ -121,7 +162,7 @@ def chat(payload: ChatRequest, request: Request):
     # runs AFTER @limiter.limit's own check above -- see get_current_user's
     # docstring for why a Depends()-based check would bypass rate limiting
     # for unauthenticated requests entirely.
-    user_id, _role = get_current_user(request.headers.get("authorization"))
+    user_id, role = get_current_user(request.headers.get("authorization"))
     conversation_id = payload.conversation_id or str(uuid.uuid4())
     message_id = payload.message_id or str(uuid.uuid4())
 
@@ -137,15 +178,7 @@ def chat(payload: ChatRequest, request: Request):
         with conn.cursor() as cur:
             try:
                 answer, hit_cap, search_log, _new_summary, _blocked_reason, _pii_findings = (
-                    retry.call_with_retry(
-                        ask_once,
-                        cur,
-                        request.app.state.embed_model,
-                        request.app.state.llm,
-                        state,
-                        payload.message,
-                        user_id,
-                    )
+                    _call_ask_once(request, cur, state, payload.message, user_id, role, conversation_id)
                 )
             except retry.TransientLLMError:
                 response_dict = ChatResponse(
@@ -178,3 +211,27 @@ def chat(payload: ChatRequest, request: Request):
         request.app.state.idempotency.set(user_id, payload.message_id, response_dict)
 
     return JSONResponse(content=response_dict)
+
+
+@app.get("/me", response_model=MeResponse)
+@limiter.limit(RATE_LIMIT)
+def me(request: Request):
+    # Same manual (non-Depends) auth check as chat() -- see get_current_user's
+    # docstring. Display-only data (name/email/role for the sidebar badge);
+    # authorization elsewhere always comes from the JWT's role claim, never
+    # from this lookup.
+    user_id, _role = get_current_user(request.headers.get("authorization"))
+
+    conn = db.get_pooled_connection(request.app.state.db_pool)
+    try:
+        with conn.cursor() as cur:
+            row = db.get_user_by_id(cur, user_id)
+    finally:
+        conn.rollback()
+        request.app.state.db_pool.putconn(conn)
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    name, email, role_name = row
+    return JSONResponse(content=MeResponse(name=name, email=email, role=role_name).model_dump())

@@ -6,6 +6,7 @@ from ingestion.db import (
     get_password_hash,
     get_role_id_map,
     get_user_by_email,
+    get_user_by_id,
     insert_chunks,
     insert_document,
     insert_document_roles,
@@ -166,6 +167,25 @@ def test_get_user_by_email_returns_none_when_not_found():
     cur.fetchone.return_value = None
 
     assert get_user_by_email(cur, "nobody@example.com") is None
+
+
+def test_get_user_by_id_returns_name_email_and_role():
+    cur = MagicMock()
+    cur.fetchone.return_value = ("Test Engineer", "eng@example.com", "engineer")
+
+    result = get_user_by_id(cur, 2)
+
+    assert result == ("Test Engineer", "eng@example.com", "engineer")
+    executed_sql, params = cur.execute.call_args[0]
+    assert "JOIN roles" in executed_sql
+    assert params == (2,)
+
+
+def test_get_user_by_id_returns_none_when_not_found():
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+
+    assert get_user_by_id(cur, 999) is None
 
 
 def test_insert_chunks_inserts_one_row_per_chunk_with_matching_embedding():

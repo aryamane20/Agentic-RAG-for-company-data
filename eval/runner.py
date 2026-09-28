@@ -12,6 +12,7 @@ import time
 from ask import ask_once
 from ingestion import chunking, db, embeddings
 from qa import conversation
+from qa.tracing import build_langfuse_client
 
 EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_PATH = os.path.join(EVAL_DIR, "golden_dataset.json")
@@ -100,20 +101,6 @@ def run_case(cur, embed_model, llm, case, config=None):
             _remove_setup_document(cur, setup_doc["filename"])
 
 
-def _build_langfuse_client():
-    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-    host = os.environ.get("LANGFUSE_HOST")
-
-    if not public_key or not secret_key:
-        print("(Langfuse credentials not set -- running without tracing)")
-        return None
-
-    from langfuse import Langfuse
-
-    return Langfuse(public_key=public_key, secret_key=secret_key, host=host)
-
-
 def run_all_cases(cur, embed_model, llm, version_label, cases=None, seconds_between_cases=0):
     """Run every case in the golden dataset, tracing each one to Langfuse
     (if configured) tagged with `version_label`. Returns the list of raw
@@ -124,7 +111,7 @@ def run_all_cases(cur, embed_model, llm, version_label, cases=None, seconds_betw
     if cases is None:
         cases = load_cases()
 
-    langfuse_client = _build_langfuse_client()
+    langfuse_client = build_langfuse_client()
     results = []
 
     for i, case in enumerate(cases, start=1):

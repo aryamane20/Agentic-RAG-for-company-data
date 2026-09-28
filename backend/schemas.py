@@ -27,3 +27,9 @@ class ChatResponse(BaseModel):
     conversation_id: str
     message_id: str
     hit_cap: bool
+
+
+class MeResponse(BaseModel):
+    name: str
+    email: str
+    role: str

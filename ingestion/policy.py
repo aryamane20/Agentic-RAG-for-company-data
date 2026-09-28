@@ -86,7 +86,7 @@ def resolve_documents(discovered_paths, policy_index, default_rule):
             allowed_roles = list(default_rule.get("allowed_roles", []))
             used_default_rule = True
             warnings.append(
-                f"'{path}' is not listed in access_policy.json — "
+                f"'{path}' is not listed in access_policy.json -- "
                 f"defaulting to allowed_roles={allowed_roles}"
             )
 
@@ -98,7 +98,7 @@ def resolve_documents(discovered_paths, policy_index, default_rule):
             # since it's easy to miss "allowed_roles=[]" buried in a list.
             source = f"rule '{rule_name}'" if rule_name else "default_rule"
             warnings.append(
-                f"'{path}' resolved to an EMPTY allowed_roles list via {source} — "
+                f"'{path}' resolved to an EMPTY allowed_roles list via {source} -- "
                 f"this document will be unreadable by ANY role, including executive, "
                 f"until access_policy.json is fixed."
             )

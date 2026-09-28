@@ -14,14 +14,14 @@ Two nested loops:
 - **Inner loop** (the agent): model decides to call `search_documents`
   zero or more times (capped at 3) before producing a final answer.
 
-No permission/role filtering yet — explicitly deferred to a later step.
+No permission/role filtering yet -- explicitly deferred to a later step.
 
 ## 1. Retrieval (`qa/retrieval.py`)
 
-- `embed_question(model, question)` — reuses `ingestion.embeddings`
+- `embed_question(model, question)` -- reuses `ingestion.embeddings`
   (same `all-MiniLM-L6-v2` model and encode path used at ingestion time,
   so query and chunk vectors live in the same space).
-- `search_chunks(cur, query_vector, top_k=5)` — raw SQL, not a vectorstore
+- `search_chunks(cur, query_vector, top_k=5)` -- raw SQL, not a vectorstore
   wrapper:
   ```sql
   SELECT c.content, d.filename, (c.embedding <=> %s) AS distance
@@ -30,7 +30,7 @@ No permission/role filtering yet — explicitly deferred to a later step.
   ORDER BY distance
   LIMIT 5;
   ```
-  `<=>` is pgvector's cosine distance operator — the only one that matches
+  `<=>` is pgvector's cosine distance operator -- the only one that matches
   the `vector_cosine_ops` HNSW index built in `schema.sql`. Using `<->`
   (L2) here would silently skip the index and fall back to a sequential
   scan. Query vector passed once, reused via the `distance` alias.
@@ -82,11 +82,11 @@ def build_search_tool(cur, embed_model, top_k=5):
 Deliberate design choice: the tool description states **only what the tool
 does** (what it searches, what it returns). All behavioral/looping rules
 (must call before answering, may re-query up to 3 times, never use own
-knowledge) live solely in the system prompt — keeping one source of truth
+knowledge) live solely in the system prompt -- keeping one source of truth
 per rule instead of duplicating instructions across the tool description
 and the system prompt where they could drift out of sync.
 
-Tool result string omits the cosine distance — the model has no reliable
+Tool result string omits the cosine distance -- the model has no reliable
 basis to interpret a raw distance number, and showing it risks the model
 treating small numeric gaps as meaningful signal. Distance is still
 recorded in the debug trace (see below), just not sent to the model.
@@ -96,7 +96,7 @@ recorded in the debug trace (see below), just not sent to the model.
 ```
 You are a helpful assistant that answers questions using ONLY information
 found by searching the internal document corpus with the search_documents
-tool. You must call this tool before answering — never answer from your own
+tool. You must call this tool before answering -- never answer from your own
 knowledge. You may call it more than once with a different or refined query
 if the first search doesn't sufficiently answer the question, up to a
 maximum of 3 searches.
@@ -107,13 +107,13 @@ your answer must be traceable to the search results, and you must name
 which document (by filename) each piece of information came from.
 
 If the search results are empty, irrelevant, or only partially answer the
-question — even after multiple searches — say so explicitly and describe
+question -- even after multiple searches -- say so explicitly and describe
 what's missing, rather than guessing or inferring beyond what was found. It
 is always better to say "I don't know based on the provided documents" than
 to produce an answer not directly supported by the search results.
 ```
 
-Initial message list: `[SystemMessage(above), HumanMessage(question)]` —
+Initial message list: `[SystemMessage(above), HumanMessage(question)]` --
 no pre-fetched context stuffed in up front; context arrives dynamically via
 tool-call results during the loop.
 
@@ -134,13 +134,13 @@ tool-call results during the loop.
   so far" instruction, rather than looping forever.
 - Designed to accept the LLM and tool as arguments (dependency injection),
   so the loop is testable with a fake LLM returning canned
-  tool-call / no-tool-call responses — no real API calls in unit tests.
+  tool-call / no-tool-call responses -- no real API calls in unit tests.
 
 ## 5. CLI loop (`ask.py`, project root)
 
 - Loads the embedding model, DB connection, and `ChatGroq` LLM once at
   startup.
-- `while True:` — prompt for a question, run the agent loop, print the
+- `while True:` -- prompt for a question, run the agent loop, print the
   retrieved-chunks trace and the final answer as clearly separate
   sections, loop back for the next question.
 - Mirrors `ingest.py`'s role as the single orchestration entrypoint that
@@ -163,9 +163,9 @@ re-query, not just what it answered.
 
 ## Explicitly deferred
 
-- No role/permission filtering in retrieval yet — will be added as a
+- No role/permission filtering in retrieval yet -- will be added as a
   `JOIN document_roles` clause at the point already marked in the SQL
   query, once retrieval quality is validated.
 - No multi-tool expansion yet (e.g. a second data source, a
-  query-reformulation tool) — architecture supports adding tools later
+  query-reformulation tool) -- architecture supports adding tools later
   without restructuring the loop.

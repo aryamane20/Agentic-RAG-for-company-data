@@ -116,6 +116,22 @@ def get_user_by_email(cur, email):
     return cur.fetchone()
 
 
+def get_user_by_id(cur, user_id):
+    """Return (name, email, role_name) for display purposes (e.g. the /me
+    endpoint) -- never used for authorization, which relies solely on the
+    JWT's own role claim."""
+    cur.execute(
+        """
+        SELECT u.name, u.email, r.name
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+        WHERE u.id = %s
+        """,
+        (user_id,),
+    )
+    return cur.fetchone()
+
+
 def insert_chunks(cur, document_id, chunk_texts, embeddings):
     for content, embedding in zip(chunk_texts, embeddings):
         cur.execute(

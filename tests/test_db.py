@@ -1,7 +1,10 @@
 from unittest.mock import MagicMock, call
 
 from ingestion.db import (
+    conversation_belongs_to_user,
     delete_document_if_exists,
+    get_conversation_messages,
+    get_conversation_owner,
     get_or_create_user,
     get_password_hash,
     get_role_id_map,
@@ -10,7 +13,11 @@ from ingestion.db import (
     insert_chunks,
     insert_document,
     insert_document_roles,
+    insert_message,
+    list_conversations,
+    make_conversation_title,
     set_password_hash,
+    upsert_conversation,
 )
 
 
@@ -186,6 +193,105 @@ def test_get_user_by_id_returns_none_when_not_found():
     cur.fetchone.return_value = None
 
     assert get_user_by_id(cur, 999) is None
+
+
+def test_make_conversation_title_returns_short_message_unchanged():
+    assert make_conversation_title("What's the PTO policy?") == "What's the PTO policy?"
+
+
+def test_make_conversation_title_truncates_long_message():
+    long_message = "a" * 60
+
+    title = make_conversation_title(long_message)
+
+    assert title == "a" * 48 + "…"
+    assert len(title) == 49
+
+
+def test_upsert_conversation_returns_true_when_row_written():
+    cur = MagicMock()
+    cur.fetchone.return_value = ("conv-1",)
+
+    result = upsert_conversation(cur, "conv-1", user_id=1, title="What's the PTO policy?")
+
+    assert result is True
+    executed_sql, params = cur.execute.call_args[0]
+    assert "ON CONFLICT" in executed_sql
+    assert params == ("conv-1", 1, "What's the PTO policy?")
+
+
+def test_upsert_conversation_returns_false_when_owned_by_another_user():
+    # the ON CONFLICT ... WHERE guard returns no row when the existing
+    # conversation belongs to a different user_id -- RETURNING then
+    # yields nothing, which fetchone() surfaces as None
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+
+    result = upsert_conversation(cur, "conv-1", user_id=2, title="hijack attempt")
+
+    assert result is False
+
+
+def test_insert_message_writes_role_content_and_sources():
+    cur = MagicMock()
+
+    insert_message(cur, "conv-1", "assistant", "18 days a year.", ["employee_handbook.md"])
+
+    executed_sql, params = cur.execute.call_args[0]
+    assert "INSERT INTO messages" in executed_sql
+    assert params == ("conv-1", "assistant", "18 days a year.", ["employee_handbook.md"])
+
+
+def test_list_conversations_returns_rows_as_is():
+    cur = MagicMock()
+    cur.fetchall.return_value = [("conv-1", "PTO policy", "2026-01-01T00:00:00Z")]
+
+    result = list_conversations(cur, user_id=1)
+
+    assert result == [("conv-1", "PTO policy", "2026-01-01T00:00:00Z")]
+    executed_sql, params = cur.execute.call_args[0]
+    assert "ORDER BY updated_at DESC" in executed_sql
+    assert params == (1,)
+
+
+def test_conversation_belongs_to_user_true_when_row_found():
+    cur = MagicMock()
+    cur.fetchone.return_value = (1,)
+
+    assert conversation_belongs_to_user(cur, "conv-1", user_id=1) is True
+
+
+def test_conversation_belongs_to_user_false_when_no_row():
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+
+    assert conversation_belongs_to_user(cur, "conv-1", user_id=1) is False
+
+
+def test_get_conversation_owner_returns_user_id():
+    cur = MagicMock()
+    cur.fetchone.return_value = (7,)
+
+    assert get_conversation_owner(cur, "conv-1") == 7
+
+
+def test_get_conversation_owner_returns_none_when_not_found():
+    cur = MagicMock()
+    cur.fetchone.return_value = None
+
+    assert get_conversation_owner(cur, "conv-1") is None
+
+
+def test_get_conversation_messages_scopes_by_user_id():
+    cur = MagicMock()
+    cur.fetchall.return_value = [("user", "hi", [], "2026-01-01T00:00:00Z")]
+
+    result = get_conversation_messages(cur, "conv-1", user_id=1)
+
+    assert result == [("user", "hi", [], "2026-01-01T00:00:00Z")]
+    executed_sql, params = cur.execute.call_args[0]
+    assert "c.user_id" in executed_sql
+    assert params == ("conv-1", 1)
 
 
 def test_insert_chunks_inserts_one_row_per_chunk_with_matching_embedding():

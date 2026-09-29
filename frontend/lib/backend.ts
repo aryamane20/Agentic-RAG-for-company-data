@@ -26,5 +26,18 @@ export interface ChatResponse {
   hit_cap: boolean;
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+export interface PersistedMessage {
+  role: "user" | "assistant";
+  content: string;
+  source_documents: string[];
+  created_at: string;
+}
+
 export const REFUSAL_TEXT =
   "I don't have information about that based on the documents available to me.";

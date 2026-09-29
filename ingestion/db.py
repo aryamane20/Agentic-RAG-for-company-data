@@ -132,6 +132,100 @@ def get_user_by_id(cur, user_id):
     return cur.fetchone()
 
 
+TITLE_MAX_LENGTH = 48
+
+
+def make_conversation_title(first_message):
+    """Same truncation convention the frontend used for its (now-retired)
+    client-only title generation -- kept here so a title generated once,
+    server-side, looks identical regardless of which client reads it."""
+    if len(first_message) > TITLE_MAX_LENGTH:
+        return first_message[:TITLE_MAX_LENGTH] + "…"
+    return first_message
+
+
+def upsert_conversation(cur, conversation_id, user_id, title):
+    """Create the conversation row on its first turn, or just bump
+    updated_at on a later turn -- title is set once, on insert, and never
+    overwritten. The ON CONFLICT's WHERE guards against a client supplying
+    a conversation_id that already belongs to a different user: the update
+    only fires when the existing row's user_id matches, so a collision
+    with someone else's id silently writes nothing instead of attaching
+    this user's messages to their conversation. Returns True if the row is
+    now owned by user_id (created or already theirs), False if blocked by
+    that guard -- callers should treat False as an authorization failure."""
+    cur.execute(
+        """
+        INSERT INTO conversations (id, user_id, title)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (id) DO UPDATE
+          SET updated_at = now()
+          WHERE conversations.user_id = EXCLUDED.user_id
+        RETURNING id
+        """,
+        (conversation_id, user_id, title),
+    )
+    return cur.fetchone() is not None
+
+
+def insert_message(cur, conversation_id, role, content, source_documents):
+    cur.execute(
+        """
+        INSERT INTO messages (conversation_id, role, content, source_documents)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (conversation_id, role, content, source_documents),
+    )
+
+
+def list_conversations(cur, user_id):
+    """Return (id, title, updated_at) tuples for the user's conversations,
+    most recently active first."""
+    cur.execute(
+        "SELECT id, title, updated_at FROM conversations WHERE user_id = %s ORDER BY updated_at DESC",
+        (user_id,),
+    )
+    return cur.fetchall()
+
+
+def conversation_belongs_to_user(cur, conversation_id, user_id):
+    cur.execute(
+        "SELECT 1 FROM conversations WHERE id = %s AND user_id = %s", (conversation_id, user_id)
+    )
+    return cur.fetchone() is not None
+
+
+def get_conversation_owner(cur, conversation_id):
+    """Returns the owning user_id, or None if the conversation doesn't
+    exist yet -- used to fail fast (403) on a client-supplied
+    conversation_id that collides with someone else's, before spending an
+    LLM call on a request that upsert_conversation would refuse to
+    persist anyway."""
+    cur.execute("SELECT user_id FROM conversations WHERE id = %s", (conversation_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def get_conversation_messages(cur, conversation_id, user_id):
+    """Return (role, content, source_documents, created_at) tuples in
+    chronological order. Always scoped by user_id via the join -- a
+    caller-supplied conversation_id that belongs to a different user (or
+    doesn't exist) simply returns an empty list, never someone else's
+    messages, whether this is used for a display read or to hydrate the
+    in-memory agent state."""
+    cur.execute(
+        """
+        SELECT m.role, m.content, m.source_documents, m.created_at
+        FROM messages m
+        JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.conversation_id = %s AND c.user_id = %s
+        ORDER BY m.created_at ASC
+        """,
+        (conversation_id, user_id),
+    )
+    return cur.fetchall()
+
+
 def insert_chunks(cur, document_id, chunk_texts, embeddings):
     for content, embedding in zip(chunk_texts, embeddings):
         cur.execute(

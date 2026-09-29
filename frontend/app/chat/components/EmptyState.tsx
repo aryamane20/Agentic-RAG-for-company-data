@@ -28,7 +28,7 @@ export default function EmptyState({ name, examples, onSelectExample }: EmptySta
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {examples.map((example) => (
             <button
-              key={example.doc}
+              key={example.text}
               type="button"
               onClick={() => onSelectExample(example)}
               style={{

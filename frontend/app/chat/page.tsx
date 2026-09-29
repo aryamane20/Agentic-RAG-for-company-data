@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { REFUSAL_TEXT, type MeResponse } from "@/lib/backend";
+import { REFUSAL_TEXT, type ConversationSummary, type MeResponse, type PersistedMessage } from "@/lib/backend";
 import { EXAMPLE_PROMPTS, ROLE_LABELS, type ExamplePrompt } from "./examples";
-import type { ChatMessage, Conversation } from "./types";
+import type { ChatMessage } from "./types";
 import Sidebar from "./components/Sidebar";
 import EmptyState from "./components/EmptyState";
 import MessageBubble from "./components/MessageBubble";
@@ -17,15 +17,24 @@ const SendIcon = () => (
   </svg>
 );
 
-function truncateTitle(text: string) {
-  return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+function fromPersisted(message: PersistedMessage): ChatMessage {
+  return {
+    id: crypto.randomUUID(),
+    role: message.role,
+    text: message.content,
+    sourceDocuments: message.source_documents,
+    isDenial: message.role === "assistant" && message.content === REFUSAL_TEXT,
+    timestamp: Date.parse(message.created_at),
+  };
 }
 
 export default function ChatPage() {
   const router = useRouter();
   const [user, setUser] = useState<MeResponse | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [summaries, setSummaries] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [loadingConversation, setLoadingConversation] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
@@ -40,24 +49,56 @@ export default function ChatPage() {
       .catch(() => router.push("/login"));
   }, [router]);
 
-  const activeConversation = useMemo(
-    () => conversations.find((c) => c.id === activeConversationId) ?? null,
-    [conversations, activeConversationId],
+  async function refreshConversationList() {
+    const response = await fetch("/api/conversations");
+    if (response.ok) {
+      setSummaries(await response.json());
+    }
+  }
+
+  useEffect(() => {
+    if (user) refreshConversationList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  const activeSummary = useMemo(
+    () => summaries.find((s) => s.id === activeConversationId) ?? null,
+    [summaries, activeConversationId],
   );
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ block: "end" });
-  }, [activeConversation?.messages.length, sending]);
+  }, [messages.length, sending]);
+
+  async function handleSelectConversation(id: string) {
+    setActiveConversationId(id);
+    setMessages([]);
+    setLoadingConversation(true);
+    try {
+      const response = await fetch(`/api/conversations/${id}`);
+      if (response.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (response.ok) {
+        const persisted: PersistedMessage[] = await response.json();
+        setMessages(persisted.map(fromPersisted));
+      }
+    } finally {
+      setLoadingConversation(false);
+    }
+  }
+
+  function handleNewConversation() {
+    setActiveConversationId(null);
+    setMessages([]);
+  }
 
   async function sendMessage(text: string) {
     const trimmed = text.trim();
     if (!trimmed || sending || !user) return;
 
-    let conversationId = activeConversationId;
-    const isNewConversation = conversationId === null;
-    if (isNewConversation) {
-      conversationId = crypto.randomUUID();
-    }
+    const conversationId = activeConversationId ?? crypto.randomUUID();
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -66,18 +107,8 @@ export default function ChatPage() {
       timestamp: Date.now(),
     };
 
-    setConversations((prev) => {
-      if (isNewConversation) {
-        return [
-          { id: conversationId!, title: truncateTitle(trimmed), messages: [userMessage] },
-          ...prev,
-        ];
-      }
-      return prev.map((c) =>
-        c.id === conversationId ? { ...c, messages: [...c.messages, userMessage] } : c,
-      );
-    });
     setActiveConversationId(conversationId);
+    setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setSending(true);
 
@@ -108,11 +139,7 @@ export default function ChatPage() {
         timestamp: Date.now(),
       };
 
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === conversationId ? { ...c, messages: [...c.messages, assistantMessage] } : c,
-        ),
-      );
+      setMessages((prev) => [...prev, assistantMessage]);
     } catch {
       const errorMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -120,13 +147,13 @@ export default function ChatPage() {
         text: "Something went wrong reaching the server. Please try again.",
         timestamp: Date.now(),
       };
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === conversationId ? { ...c, messages: [...c.messages, errorMessage] } : c,
-        ),
-      );
+      setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setSending(false);
+      // The turn is persisted server-side by now (or wasn't, on a network
+      // failure caught above) -- refresh so the sidebar picks up a new
+      // conversation's title or an existing one's bumped position.
+      refreshConversationList();
     }
   }
 
@@ -150,6 +177,7 @@ export default function ChatPage() {
 
   const badge = `${user.name} · ${ROLE_LABELS[user.role]}`;
   const firstName = user.name.split(" ")[0];
+  const hasActiveConversation = activeConversationId !== null;
 
   return (
     <div
@@ -161,10 +189,10 @@ export default function ChatPage() {
       }}
     >
       <Sidebar
-        conversations={conversations}
+        conversations={summaries}
         activeConversationId={activeConversationId}
-        onSelectConversation={setActiveConversationId}
-        onNewConversation={() => setActiveConversationId(null)}
+        onSelectConversation={handleSelectConversation}
+        onNewConversation={handleNewConversation}
         badge={badge}
         initial={user.name.charAt(0).toUpperCase()}
         onLogout={handleLogout}
@@ -184,20 +212,24 @@ export default function ChatPage() {
           <div
             style={{
               fontSize: 15,
-              fontWeight: activeConversation ? 600 : 400,
-              color: activeConversation ? "var(--color-text)" : "var(--color-neutral-700)",
+              fontWeight: hasActiveConversation ? 600 : 400,
+              color: hasActiveConversation ? "var(--color-text)" : "var(--color-neutral-700)",
             }}
           >
-            {activeConversation?.title ?? "New conversation"}
+            {activeSummary?.title ?? "New conversation"}
           </div>
         </header>
 
-        {!activeConversation ? (
+        {!hasActiveConversation ? (
           <EmptyState name={firstName} examples={EXAMPLE_PROMPTS[user.role]} onSelectExample={handleSelectExample} />
+        ) : loadingConversation ? (
+          <div style={{ flex: 1, minHeight: 0, display: "grid", placeItems: "center" }}>
+            <ThinkingDots />
+          </div>
         ) : (
           <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", justifyContent: "center" }}>
             <div style={{ width: "100%", maxWidth: 760, padding: "24px 32px 20px", display: "flex", flexDirection: "column", gap: 22 }}>
-              {activeConversation.messages.map((message) => (
+              {messages.map((message) => (
                 <MessageBubble key={message.id} message={message} />
               ))}
               {sending && (

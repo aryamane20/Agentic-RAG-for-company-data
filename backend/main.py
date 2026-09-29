@@ -16,7 +16,15 @@ from ask import ask_once
 from backend import auth, retry
 from backend.errors import RequestIDMiddleware, register_error_handlers
 from backend.ratelimit import LOGIN_RATE_LIMIT, RATE_LIMIT, limiter
-from backend.schemas import ChatRequest, ChatResponse, LoginRequest, LoginResponse, MeResponse
+from backend.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ConversationSummary,
+    LoginRequest,
+    LoginResponse,
+    MeResponse,
+    MessageOut,
+)
 from backend.store import ConversationStore, IdempotencyStore
 from ingestion import db, embeddings
 from qa import llm as llm_module
@@ -155,6 +163,21 @@ def _call_ask_once(request, cur, state, message, user_id, role, conversation_id)
         )
 
 
+def _persist_turn(cur, conversation_id, user_id, question, answer, source_documents):
+    """Writes both sides of this turn as one unit -- called right before
+    the commit at the end of chat(), success or fallback path alike, so
+    reloaded history never shows a question with no visible reply. Skips
+    the write entirely (rather than raising) if upsert_conversation's
+    ownership guard trips -- see its docstring; that guard already
+    happened once, fast, at the top of chat(), so this is defense in
+    depth against a race, not the primary check."""
+    title = db.make_conversation_title(question)
+    if not db.upsert_conversation(cur, conversation_id, user_id, title):
+        return
+    db.insert_message(cur, conversation_id, "user", question, [])
+    db.insert_message(cur, conversation_id, "assistant", answer, source_documents)
+
+
 @app.post("/chat", response_model=ChatResponse)
 @limiter.limit(RATE_LIMIT)
 def chat(payload: ChatRequest, request: Request):
@@ -166,38 +189,72 @@ def chat(payload: ChatRequest, request: Request):
     conversation_id = payload.conversation_id or str(uuid.uuid4())
     message_id = payload.message_id or str(uuid.uuid4())
 
+    if payload.conversation_id is not None:
+        try:
+            uuid.UUID(payload.conversation_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="conversation_id must be a UUID")
+
     if payload.message_id is not None:
         cached = request.app.state.idempotency.get(user_id, payload.message_id)
         if cached is not None:
             return JSONResponse(content=cached)
 
-    state = request.app.state.conversations.get_or_create(user_id, conversation_id)
-
     conn = db.get_pooled_connection(request.app.state.db_pool)
     try:
-        with conn.cursor() as cur:
-            try:
-                answer, hit_cap, search_log, _new_summary, _blocked_reason, _pii_findings = (
-                    _call_ask_once(request, cur, state, payload.message, user_id, role, conversation_id)
-                )
-            except retry.TransientLLMError:
-                response_dict = ChatResponse(
-                    answer=retry.FALLBACK_MESSAGE,
-                    source_documents=[],
-                    conversation_id=conversation_id,
-                    message_id=message_id,
-                    hit_cap=False,
-                ).model_dump()
-                if payload.message_id is not None:
-                    request.app.state.idempotency.set(user_id, payload.message_id, response_dict)
-                return JSONResponse(content=response_dict)
-    finally:
-        conn.rollback()
-        request.app.state.db_pool.putconn(conn)
+        try:
+            with conn.cursor() as cur:
+                # Fail fast (before spending an LLM call) if the client
+                # supplied a conversation_id that already belongs to someone
+                # else -- upsert_conversation would refuse to persist under
+                # it anyway.
+                existing_owner = db.get_conversation_owner(cur, conversation_id)
+                if existing_owner is not None and existing_owner != user_id:
+                    raise HTTPException(status_code=403, detail="This conversation does not belong to you")
 
-    source_documents = sorted(
-        {chunk["filename"] for entry in search_log for chunk in entry["chunks"]}
-    )
+                state = request.app.state.conversations.get_or_create(
+                    user_id,
+                    conversation_id,
+                    loader=lambda: [
+                        (row[0], row[1])
+                        for row in db.get_conversation_messages(cur, conversation_id, user_id)
+                    ],
+                )
+
+                try:
+                    answer, hit_cap, search_log, _new_summary, _blocked_reason, _pii_findings = (
+                        _call_ask_once(request, cur, state, payload.message, user_id, role, conversation_id)
+                    )
+                except retry.TransientLLMError:
+                    _persist_turn(cur, conversation_id, user_id, payload.message, retry.FALLBACK_MESSAGE, [])
+                    conn.commit()
+                    response_dict = ChatResponse(
+                        answer=retry.FALLBACK_MESSAGE,
+                        source_documents=[],
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        hit_cap=False,
+                    ).model_dump()
+                    if payload.message_id is not None:
+                        request.app.state.idempotency.set(user_id, payload.message_id, response_dict)
+                    return JSONResponse(content=response_dict)
+
+                source_documents = sorted(
+                    {chunk["filename"] for entry in search_log for chunk in entry["chunks"]}
+                )
+                _persist_turn(cur, conversation_id, user_id, payload.message, answer, source_documents)
+            conn.commit()
+        except Exception:
+            # Every path above that succeeds already committed and
+            # returned; reaching here means something raised (the 403
+            # above, a search/LLM error, anything) with the transaction
+            # still open. Roll back before the connection goes back to the
+            # pool -- otherwise the next request to borrow it inherits an
+            # aborted transaction and every query on it fails.
+            conn.rollback()
+            raise
+    finally:
+        request.app.state.db_pool.putconn(conn)
 
     response_dict = ChatResponse(
         answer=answer,
@@ -235,3 +292,55 @@ def me(request: Request):
 
     name, email, role_name = row
     return JSONResponse(content=MeResponse(name=name, email=email, role=role_name).model_dump())
+
+
+@app.get("/conversations")
+@limiter.limit(RATE_LIMIT)
+def list_conversations(request: Request):
+    user_id, _role = get_current_user(request.headers.get("authorization"))
+
+    conn = db.get_pooled_connection(request.app.state.db_pool)
+    try:
+        with conn.cursor() as cur:
+            rows = db.list_conversations(cur, user_id)
+    finally:
+        conn.rollback()
+        request.app.state.db_pool.putconn(conn)
+
+    summaries = [
+        ConversationSummary(id=str(conv_id), title=title, updated_at=updated_at).model_dump(mode="json")
+        for conv_id, title, updated_at in rows
+    ]
+    return JSONResponse(content=summaries)
+
+
+@app.get("/conversations/{conversation_id}")
+@limiter.limit(RATE_LIMIT)
+def get_conversation(conversation_id: str, request: Request):
+    user_id, _role = get_current_user(request.headers.get("authorization"))
+
+    try:
+        uuid.UUID(conversation_id)
+    except ValueError:
+        # Not a well-formed UUID at all -- can't match any row, so treat
+        # it as not-found rather than letting an invalid-input-syntax
+        # error reach Postgres and surface as a 500.
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conn = db.get_pooled_connection(request.app.state.db_pool)
+    try:
+        with conn.cursor() as cur:
+            if not db.conversation_belongs_to_user(cur, conversation_id, user_id):
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            rows = db.get_conversation_messages(cur, conversation_id, user_id)
+    finally:
+        conn.rollback()
+        request.app.state.db_pool.putconn(conn)
+
+    messages = [
+        MessageOut(
+            role=role, content=content, source_documents=source_documents or [], created_at=created_at,
+        ).model_dump(mode="json")
+        for role, content, source_documents, created_at in rows
+    ]
+    return JSONResponse(content=messages)

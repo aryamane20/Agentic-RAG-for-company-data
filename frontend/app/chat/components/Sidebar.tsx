@@ -1,4 +1,4 @@
-import type { Conversation } from "../types";
+import type { ConversationSummary } from "@/lib/backend";
 
 const PlusIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.75" strokeLinecap="round" strokeLinejoin="round">
@@ -16,7 +16,7 @@ const LogoutIcon = () => (
 );
 
 interface SidebarProps {
-  conversations: Conversation[];
+  conversations: ConversationSummary[];
   activeConversationId: string | null;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;

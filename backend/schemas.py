@@ -1,5 +1,6 @@
 """Pydantic request/response models for the API."""
 
+from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel
@@ -33,3 +34,16 @@ class MeResponse(BaseModel):
     name: str
     email: str
     role: str
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    updated_at: datetime
+
+
+class MessageOut(BaseModel):
+    role: str
+    content: str
+    source_documents: List[str]
+    created_at: datetime

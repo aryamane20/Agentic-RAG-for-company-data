@@ -22,6 +22,22 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download and cache the embedding model at build time, not runtime.
+# Render's container filesystem is ephemeral -- with no persistent cache,
+# every deploy would otherwise hit HuggingFace's network on first boot,
+# and that download (on top of loading the model itself) is what was
+# pushing memory over the 512Mi limit during startup. Baking it into the
+# image means startup loads straight from local disk, no network
+# involved, and cold starts are faster too.
+RUN python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
+# Only now, after the model is cached above -- huggingface_hub otherwise
+# does a revision-check network call against HuggingFace on every load
+# even when the files are already cached. Offline mode skips that and
+# reads straight from the cache populated by the RUN step above.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 COPY . .
 RUN chmod +x docker-entrypoint.sh
 

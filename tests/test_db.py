@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, call
 
 from ingestion.db import (
+    _connection_kwargs,
     conversation_belongs_to_user,
     delete_document_if_exists,
     get_conversation_messages,
@@ -19,6 +20,29 @@ from ingestion.db import (
     set_password_hash,
     upsert_conversation,
 )
+
+
+def test_connection_kwargs_uses_database_url_when_set(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgres://u:p@railway-host:5432/railway")
+
+    assert _connection_kwargs() == {"dsn": "postgres://u:p@railway-host:5432/railway"}
+
+
+def test_connection_kwargs_falls_back_to_discrete_vars_when_no_database_url(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DB_HOST", "somehost")
+    monkeypatch.setenv("DB_PORT", "5555")
+    monkeypatch.setenv("DB_NAME", "somedb")
+    monkeypatch.setenv("DB_USER", "someuser")
+    monkeypatch.setenv("DB_PASSWORD", "somepass")
+
+    assert _connection_kwargs() == {
+        "host": "somehost",
+        "port": 5555,
+        "dbname": "somedb",
+        "user": "someuser",
+        "password": "somepass",
+    }
 
 
 def test_get_role_id_map_builds_name_to_id_dict():

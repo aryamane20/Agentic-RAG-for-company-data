@@ -4,20 +4,33 @@ rerun safety (document_roles/chunks cascade-delete automatically)."""
 
 import os
 
-DB_CONFIG = {
-    "host": os.environ.get("DB_HOST", "localhost"),
-    "port": int(os.environ.get("DB_PORT", "5435")),
-    "dbname": os.environ.get("DB_NAME", "rag_db"),
-    "user": os.environ.get("DB_USER", "rag_user"),
-    "password": os.environ.get("DB_PASSWORD", "rag_password"),
-}
+
+def _connection_kwargs():
+    """Prefer DATABASE_URL when it's set (Railway's managed Postgres
+    provides one directly) over the discrete DB_* vars -- psycopg2.connect()
+    accepts either a dsn string or discrete kwargs, never a mix, so this
+    picks one shape based on what's actually in the environment. Local
+    dev (docker-compose, or a bare host run) never sets DATABASE_URL, so
+    this is a no-op there -- same discrete DB_HOST/PORT/NAME/USER/PASSWORD
+    vars as before, evaluated fresh on every call rather than once at
+    import time."""
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        return {"dsn": database_url}
+    return {
+        "host": os.environ.get("DB_HOST", "localhost"),
+        "port": int(os.environ.get("DB_PORT", "5435")),
+        "dbname": os.environ.get("DB_NAME", "rag_db"),
+        "user": os.environ.get("DB_USER", "rag_user"),
+        "password": os.environ.get("DB_PASSWORD", "rag_password"),
+    }
 
 
 def get_connection(config=None):
     import psycopg2
     from pgvector.psycopg2 import register_vector
 
-    conn = psycopg2.connect(**(config or DB_CONFIG))
+    conn = psycopg2.connect(**(config or _connection_kwargs()))
     register_vector(conn)
     return conn
 
@@ -27,7 +40,7 @@ def get_connection_pool(minconn=1, maxconn=10, config=None):
     connection per HTTP request would be wasteful under real traffic."""
     from psycopg2 import pool as pg_pool
 
-    return pg_pool.SimpleConnectionPool(minconn, maxconn, **(config or DB_CONFIG))
+    return pg_pool.SimpleConnectionPool(minconn, maxconn, **(config or _connection_kwargs()))
 
 
 def get_pooled_connection(conn_pool):

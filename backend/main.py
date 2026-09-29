@@ -81,6 +81,15 @@ app.add_middleware(RequestIDMiddleware)
 register_error_handlers(app)
 
 
+@app.get("/health")
+def health():
+    # Liveness only -- confirms the process is up and serving requests,
+    # not that the DB/LLM are reachable. No auth, no rate limit: this is
+    # meant to be hit frequently and cheaply by Railway's health checker,
+    # not a real API route.
+    return {"status": "ok"}
+
+
 def get_current_user(authorization):
     """The only source of user_id/role for a /chat request -- never the
     request body. Raises 401 for anything wrong with the token, without

@@ -6,8 +6,14 @@ EMBEDDING_DIM = 384
 
 
 def load_model(model_name=EMBEDDING_MODEL_NAME):
+    import torch
     from sentence_transformers import SentenceTransformer
 
+    # Belt-and-suspenders alongside the Dockerfile's OMP_NUM_THREADS=1 --
+    # this applies even when load_model() runs somewhere that env var
+    # isn't set (e.g. a local venv), same reasoning: one request's worth
+    # of embeddings at a time, extra threads just cost memory.
+    torch.set_num_threads(1)
     return SentenceTransformer(model_name)
 
 

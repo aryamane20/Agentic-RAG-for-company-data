@@ -1,0 +1,1 @@
+Every company chatbot has the same problem: it knows too much. Solstice Analytics RAG Chat enforces role-based access at the database query level, not the UI, so the same question gets a different answer depending on who's asking. Built with FastAPI, LangChain, Groq, Postgres/pgvector, and Next.js.
